@@ -6,12 +6,16 @@ import hashlib
 import json
 import struct
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
 from build_wheels import TARGETS, UPSTREAM_COMMIT, UPSTREAM_TAG
 
-EXPECTED_VERSION = UPSTREAM_TAG.removeprefix("v") + ".0"
+with (Path(__file__).resolve().parents[1] / "pyproject.toml").open("rb") as metadata:
+    EXPECTED_VERSION = tomllib.load(metadata)["project"]["version"]
+if not EXPECTED_VERSION.startswith(UPSTREAM_TAG.removeprefix("v") + "."):
+    raise ValueError("Package version must extend the pinned server version")
 ELF_MACHINES = {"linux_amd64": 62, "linux_arm64": 183, "linux_armv7": 40}
 MACH_CPUS = {"darwin_amd64": 0x01000007, "darwin_arm64": 0x0100000C}
 
