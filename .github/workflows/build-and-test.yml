@@ -1,0 +1,133 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build-wheels:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.8"
+      - run: python -m pip install "build==1.6.1" "setuptools>=77,<90" "wheel>=0.45,<1" "ruff==0.16.8"
+      - run: python -m ruff check . && python -m ruff format --check .
+      - run: python scripts/build_wheels.py all
+      - run: python scripts/verify_wheels.py dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: embedded-nats-wheels
+          path: |
+            dist/*.whl
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  test-wheels:
+    needs: build-wheels
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {target: linux_amd64, os: ubuntu-24.04}
+          - {target: linux_arm64, os: ubuntu-24.04-arm}
+          - {target: linux_armv7, os: ubuntu-24.04, emulated: true}
+          - {target: darwin_amd64, os: macos-15-intel}
+          - {target: darwin_arm64, os: macos-15}
+          - {target: windows_amd64, os: windows-2022}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: embedded-nats-wheels
+          path: dist
+      - uses: actions/setup-python@v7
+        if: ${{ !matrix.emulated }}
+        with:
+          python-version: "3.12"
+      - uses: docker/setup-qemu-action@v3
+        if: ${{ matrix.emulated }}
+        with:
+          platforms: arm
+      - name: Installed wheel acceptance
+        if: ${{ !matrix.emulated }}
+        run: python scripts/install_and_test.py ${{ matrix.target }}
+      - name: ARMv7 installed wheel acceptance (QEMU)
+        if: ${{ matrix.emulated }}
+        shell: bash
+        run: |
+          docker run --rm --platform linux/arm/v7 -v "$PWD:/work" -w /work python:3.12-slim-bookworm \
+            sh -c 'python scripts/install_and_test.py linux_armv7'
+
+  verify-release:
+    needs: [build-wheels, test-wheels]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: embedded-nats-wheels
+          path: dist
+      - name: Verify exact artifact inventory and version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [ "$REF_TYPE" = tag ] && [ "$REF_NAME" != v2.15.0.0 ]; then
+            echo "Tag/version mismatch: $REF_NAME" >&2
+            exit 1
+          fi
+          python scripts/verify_wheels.py dist
+          (cd dist && sha256sum -c SHA256SUMS)
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify-release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: embedded-nats-wheels
+          path: dist
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.whl dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+
+  publish-pypi:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify-release
+    runs-on: ubuntu-24.04
+    environment:
+      name: pypi
+      url: https://pypi.org/project/embedded-nats/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: embedded-nats-wheels
+          path: dist
+      - run: python scripts/prepare_pypi.py
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pypi-dist/

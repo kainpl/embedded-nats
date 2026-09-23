@@ -1,0 +1,8 @@
+embedded-nats
+Copyright 2026 Valeriy V. Pushkar
+
+This package bundles nats-server, built from the source at
+https://github.com/nats-io/nats-server, under the Apache License 2.0.
+The source revision and Go module inventory of each wheel are recorded in
+embedded_nats/build_manifest.json. The upstream nats-server source has a
+LICENSE file and no NOTICE file at the pinned revision.

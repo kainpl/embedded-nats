@@ -1,0 +1,11 @@
+.upstream-nats/
+.venv/
+build/
+dist/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.wheels/
+src/embedded_nats/bin/
+src/embedded_nats/build_manifest.json

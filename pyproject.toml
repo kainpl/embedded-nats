@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=77", "wheel>=0.45"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "embedded-nats"
+version = "2.15.0.0"
+description = "NATS server and JetStream Object Store as a platform wheel"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "Valeriy V. Pushkar" }]
+dependencies = ["nats-py==2.16.0"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+]
+
+[project.urls]
+Repository = "https://github.com/kainpl/embedded-nats"
+Issues = "https://github.com/kainpl/embedded-nats/issues"
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "pytest-timeout>=2,<3"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+embedded_nats = ["bin/nats-server", "bin/nats-server.exe", "build_manifest.json", "licenses/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: requires a bundled nats-server binary", "slow: large Object Store or crash test"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
