@@ -203,19 +203,25 @@ os._exit(0)
         assert marker["child_pid"] == child_pid
         with pytest.raises(RecoveryRequired):
             NatsServer(store).start()
+        with pytest.raises(RecoveryRequired, match="lease_held"):
+            NatsServer(store, recover_stale=True).start()
         with socket.create_connection(("127.0.0.1", status["port"]), timeout=2):
             pass
     finally:
         os.kill(child_pid, signal.SIGTERM)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        with socket.socket() as connection:
-            if connection.connect_ex(("127.0.0.1", status["port"])) != 0:
-                break
+        try:
+            recovered = NatsServer(store, recover_stale=True).start()
+        except RecoveryRequired:
+            pass
+        else:
+            assert recovered.recovered_generation == marker["generation"]
+            recovered.stop()
+            break
         time.sleep(0.05)
     else:
         pytest.fail("orphan child kept listening after exact-PID test cleanup")
-    (store / "managed-runtime.json").unlink()  # Deliberate manual recovery in a disposable test store.
     with NatsServer(store):
         pass
 

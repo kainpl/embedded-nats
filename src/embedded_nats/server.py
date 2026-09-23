@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import socket
+import stat
 import subprocess
 import threading
 import time
@@ -17,6 +18,8 @@ from typing import Self
 from urllib.parse import urlparse
 
 import nats
+
+from ._lease import LeaseHeld, LifetimeLease
 
 SERVER_VERSION = "2.15.0"
 _LIMIT = re.compile(r"^[1-9][0-9]*(?:KB|MB|GB)$")
@@ -35,6 +38,11 @@ class StoreInUse(EmbeddedNatsError):
 
 class RecoveryRequired(EmbeddedNatsError):
     """An earlier process may still own the persistent store."""
+
+    def __init__(self, message: str, *, reason: str = "unknown", marker_path: Path | None = None):
+        super().__init__(message)
+        self.reason = reason
+        self.marker_path = marker_path
 
 
 def binary_path() -> Path:
@@ -205,6 +213,7 @@ class NatsServer:
         sync_interval: str = "always",
         startup_timeout: float = 15,
         shutdown_timeout: float = 10,
+        recover_stale: bool = False,
     ) -> None:
         if host not in ("127.0.0.1", "::1"):
             raise ValueError("Only explicit loopback hosts are supported")
@@ -218,6 +227,8 @@ class NatsServer:
             raise ValueError("sync_interval must be 'always' or a positive duration")
         if startup_timeout <= 0 or shutdown_timeout <= 0:
             raise ValueError("Time limits must be positive")
+        if not isinstance(recover_stale, bool):
+            raise ValueError("recover_stale must be a boolean")
         token = secrets.token_urlsafe(32) if auth_token is None else auth_token
         if not _TOKEN.fullmatch(token):
             raise ValueError("auth_token must be 16-256 URL-safe ASCII characters")
@@ -232,6 +243,9 @@ class NatsServer:
         self.sync_interval = sync_interval
         self.startup_timeout = startup_timeout
         self.shutdown_timeout = shutdown_timeout
+        self.recover_stale = recover_stale
+        self.recovered_generation: str | None = None
+        self._lease: LifetimeLease | None = None
         self._mutex = threading.RLock()
         self._store_lock: _StoreLock | None = None
         self._process: subprocess.Popen[bytes] | None = None
@@ -260,10 +274,15 @@ class NatsServer:
     def log_path(self) -> Path:
         return self.store_dir / "logs" / "nats.log"
 
+    @property
+    def recovery_marker_path(self) -> Path:
+        return self.store_dir / "managed-runtime.json"
+
     def _config(self) -> str:
         assert self._runtime_dir is not None
         listen_host = f"[{self.host}]" if ":" in self.host else self.host
         lines = [
+            f"server_name: {_quoted(self._generation)}",
             f"listen: {_quoted(f'{listen_host}:{self.requested_port or -1}')}",
             f"authorization: {{ token: {_quoted(self.auth_token)} }}",
             f"ports_file_dir: {_quoted(str(self._runtime_dir))}",
@@ -284,13 +303,85 @@ class NatsServer:
         return "\n".join(lines) + "\n"
 
     def _marker_path(self) -> Path:
-        return self.store_dir / "managed-runtime.json"
+        return self.recovery_marker_path
+
+    def _recovery(self, reason: str) -> RecoveryRequired:
+        return RecoveryRequired(
+            f"Managed runtime needs recovery ({reason}); inspect {self.recovery_marker_path}",
+            reason=reason,
+            marker_path=self.recovery_marker_path,
+        )
+
+    def _prepare_lease(self) -> None:
+        """Called under the manager lock; never infer death from a PID or port."""
+        marker = self.recovery_marker_path
+        recorded = None
+        if marker.exists() or marker.is_symlink():
+            if not self.recover_stale:
+                raise self._recovery("opt_in_required")
+            try:
+                info = marker.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 8192:
+                    raise ValueError("Invalid marker file")
+                recorded = json.loads(marker.read_text(encoding="utf-8"))
+                if (
+                    not isinstance(recorded, dict)
+                    or recorded.get("schema") != 2
+                    or not isinstance(recorded.get("generation"), str)
+                    or not re.fullmatch(r"[0-9a-f]{32}", recorded["generation"])
+                    or not isinstance(recorded.get("lease_identity"), list)
+                    or len(recorded["lease_identity"]) != 2
+                    or any(type(x) is not int or x < 0 for x in recorded["lease_identity"])
+                ):
+                    raise ValueError("Unsupported marker")
+            except (OSError, ValueError, TypeError):
+                raise self._recovery("unknown_marker") from None
+        self._lease = LifetimeLease(self.store_dir / ".broker.lease")
+        try:
+            self._lease.acquire(create=recorded is None)
+        except LeaseHeld:
+            raise self._recovery("lease_held") from None
+        except OSError:
+            raise self._recovery("lease_unavailable") from None
+        if recorded is not None:
+            if recorded["lease_identity"] != self._lease.identity:
+                raise self._recovery("lease_identity_changed")
+            # Kernel exclusion on the exact inherited file, not process visibility.
+            try:
+                self._remove_generation(recorded["generation"])
+                marker.unlink()
+            except OSError:
+                raise self._recovery("cleanup_failed") from None
+            self.recovered_generation = recorded["generation"]
+
+    def _remove_generation(self, generation: str) -> None:
+        parent = self.store_dir / ".runtime"
+        directory = parent / generation
+        if parent.is_symlink() or parent.is_junction() or directory.is_symlink() or directory.is_junction():
+            raise self._recovery("unsafe_runtime_path")
+        if not directory.exists():
+            return  # A previous recoverer may have died just before removing the marker.
+        paths = list(directory.iterdir())
+        if any(not stat.S_ISREG(p.lstat().st_mode) or p.is_junction() or p.stat().st_nlink != 1 for p in paths):
+            raise self._recovery("unsafe_runtime_entry")
+        for path in paths:
+            path.unlink()
+        directory.rmdir()
 
     def _write_marker(self, child_pid: int | None = None) -> None:
         assert self._runtime_dir is not None and self._generation is not None
         temporary = self._runtime_dir / "managed-runtime.json.tmp"
-        metadata = {"generation": self._generation, "owner_pid": os.getpid(), "child_pid": child_pid}
-        temporary.write_text(json.dumps(metadata), encoding="utf-8")
+        metadata = {
+            "schema": 2,
+            "generation": self._generation,
+            "owner_pid": os.getpid(),
+            "child_pid": child_pid,
+            "lease_identity": self._lease.identity,
+        }
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(metadata, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
         if os.name != "nt":
             temporary.chmod(0o600)
         os.replace(temporary, self._marker_path())
@@ -315,18 +406,26 @@ class NatsServer:
     def _cleanup_runtime(self) -> None:
         if self._runtime_dir is None or self._generation is None:
             return
+        # Close the parent's copy BEFORE probing: it might have been inherited
+        # even if Popen failed to return a handle. Do not mistake our own lock for
+        # proof that an unobserved child is gone.
+        identity = self._lease.identity
+        self._lease.close()
+        try:
+            self._lease.acquire()
+        except OSError:
+            raise self._recovery("lease_unavailable") from None
+        if self._lease.identity != identity:
+            raise self._recovery("lease_identity_changed")
         marker = self._marker_path()
         if marker.exists():
             try:
                 recorded = json.loads(marker.read_text(encoding="utf-8"))
             except ValueError:
-                return
-            if recorded.get("generation") != self._generation:
-                return
-        for path in self._runtime_dir.iterdir():
-            if path.is_file() and path.parent == self._runtime_dir:
-                path.unlink()
-        self._runtime_dir.rmdir()
+                raise self._recovery("unknown_marker") from None
+            if not isinstance(recorded, dict) or recorded.get("generation") != self._generation:
+                raise self._recovery("marker_changed")
+        self._remove_generation(self._generation)
         marker.unlink(missing_ok=True)
         self._runtime_dir = None
         self._generation = None
@@ -352,18 +451,31 @@ class NatsServer:
             if self._process is not None:
                 if self._process.poll() is None:
                     return self
-                raise RecoveryRequired("Managed NATS child exited unexpectedly; inspect the store")
+                if not self.recover_stale:
+                    raise self._recovery("child_exited")
+                try:
+                    self.stop()
+                except RecoveryRequired:
+                    pass  # Exact child reaped; marker still goes through the public recovery gate.
             self.store_dir = _private_directory(self.store_dir)
             lock = _StoreLock(self.store_dir / ".managed.lock")
             lock.acquire()
             self._store_lock = lock
-            if self._marker_path().exists():
+            self.recovered_generation = None
+            try:
+                self._prepare_lease()
+            except Exception:
+                if self._lease:
+                    self._lease.close()
                 lock.release()
                 self._store_lock = None
-                raise RecoveryRequired("Previous managed runtime is unresolved; inspect managed-runtime.json")
+                raise
             try:
                 self._generation = uuid.uuid4().hex
-                _private_directory(self.store_dir / ".runtime")
+                runtime_parent = self.store_dir / ".runtime"
+                if runtime_parent.is_symlink() or runtime_parent.is_junction():
+                    raise self._recovery("unsafe_runtime_path")
+                _private_directory(runtime_parent)
                 self._runtime_dir = _private_directory(self.store_dir / ".runtime" / self._generation)
                 _private_directory(self.store_dir / "logs")
                 if server_version() != SERVER_VERSION:
@@ -385,14 +497,17 @@ class NatsServer:
                         "Bundled server rejected generated config: " + _redact(checked.stderr, self.auth_token)
                     )
                 self._write_marker()
-                self._process = subprocess.Popen(
-                    [str(binary_path()), "-c", str(config_path)],
-                    cwd=self._runtime_dir,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=_CREATE_NO_WINDOW,
-                )
+                with self._lease.inheritance() as inherited:
+                    self._process = subprocess.Popen(
+                        [str(binary_path()), "-c", str(config_path)],
+                        cwd=self._runtime_dir,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=_CREATE_NO_WINDOW,
+                        **inherited,
+                    )
+                self._lease.close()
                 self._write_marker(self._process.pid)
                 deadline = time.monotonic() + self.startup_timeout
                 last_error: BaseException | None = None
@@ -412,7 +527,15 @@ class NatsServer:
                             info = _read_info(self.host, port, timeout)
                             if info.get("version") != SERVER_VERSION:
                                 raise EmbeddedNatsError("NATS INFO reports an unexpected version")
+                            if info.get("server_name") != self._generation:
+                                raise EmbeddedNatsError("NATS INFO reports an unexpected generation")
                             _probe_in_thread(self.url, self.auth_token, self.jetstream, timeout)
+                            try:
+                                self._lease.acquire()
+                            except LeaseHeld:
+                                pass
+                            else:
+                                raise EmbeddedNatsError("Broker did not retain its lifetime lease")
                             return self
                         except (nats.errors.Error, TimeoutError, OSError, ValueError, TypeError) as exc:
                             last_error = exc
@@ -429,6 +552,7 @@ class NatsServer:
                     raise RecoveryRequired("NATS startup failed and child ownership remains uncertain") from cleanup_exc
                 finally:
                     if self._process is None or self._process.poll() is not None:
+                        self._lease.close()
                         lock.release()
                         self._store_lock = None
                         self._process = None
@@ -443,11 +567,13 @@ class NatsServer:
             try:
                 mode = self._stop_child()
                 if mode == "crashed":
-                    raise RecoveryRequired("NATS child had already exited; runtime marker retained")
+                    raise self._recovery("child_exited")
                 self._cleanup_runtime()
                 return mode
             finally:
                 if self._process.poll() is not None:
+                    if self._lease:
+                        self._lease.close()
                     self._process = None
                     self._port = None
                     if self._store_lock is not None:

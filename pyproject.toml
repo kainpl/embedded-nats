@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "embedded-nats"
-version = "2.15.0.0"
+version = "2.15.0.1"
 description = "NATS server and JetStream Object Store as a platform wheel"
 readme = "README.md"
 requires-python = ">=3.12"

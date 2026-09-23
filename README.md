@@ -6,7 +6,7 @@ that one server. The project targets Python 3.12+ on Windows x64, Linux
 x86_64/aarch64/armv7l, and macOS x86_64/arm64 (macOS 12+).
 
 The package version tracks the server version plus a packaging revision:
-`2.15.0.0` bundles NATS `2.15.0`, packaging revision 0. No Go toolchain is
+`2.15.0.1` bundles NATS `2.15.0`, packaging revision 1. No Go toolchain is
 needed to install a wheel. The only Python runtime dependency is pinned
 `nats-py` 2.16.0.
 
@@ -54,8 +54,36 @@ The synchronous manager should be started outside an application's asyncio
 event loop (for example with `await asyncio.to_thread(server.start)`). It
 starts a child, waits for an authenticated NATS roundtrip and JetStream API,
 then owns that child until `stop()`. A second manager cannot control the same
-store. A previous process marker requires manual recovery; the package does
+store. By default a previous process marker requires manual recovery; the package does
 not adopt or kill a process identified only by an old PID.
+
+### Opt-in recovery after a crash
+
+`NatsServer(store, recover_stale=True)` can recover a runtime created by this
+version after its broker has exited. A separate kernel-held lifetime fence is
+inherited by the broker itself: `flock` on Linux/macOS, an exclusive file handle
+on Windows. Recovery must acquire the **same physical fence file** while holding
+the manager lock. Neither a closed port, PID reuse, a clock adjustment nor a
+different container PID namespace is treated as evidence of death. No orphan
+process is killed or adopted. `server.recovered_generation` identifies a recovered
+generation, or is `None` for a clean start.
+
+Use a **local filesystem**, not NFS/SMB or a store shared across machines. Never
+delete or replace `.broker.lease`: the persistent file binds the evidence to its
+kernel object. Legacy/corrupt markers, missing/replaced/copied fence files,
+permission errors and live holders still require manual recovery. A copied
+unclean store is not automatically trusted. A reboot releases the kernel fence;
+it does not erase or repair JetStream data. The package removes only old runtime
+configuration/port files and the marker, never `jetstream/` or buckets.
+
+`RecoveryRequired.reason` is a diagnostic code; `RecoveryRequired.marker_path`
+and `server.recovery_marker_path` are public diagnostic paths. These fields contain
+no credentials. A broker that dies during the manager's lifetime still makes
+`stop()` report `RecoveryRequired`; a subsequent opt-in start can recover it.
+
+This proves broker ownership only. Consumers must independently contain their
+workers and must not delete old staging files just because broker recovery
+succeeded. There is no automatic replay of consumer commands.
 
 ## Data and security
 
