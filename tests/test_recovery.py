@@ -3,8 +3,8 @@
 import asyncio
 import json
 import os
-import signal
 import shutil
+import signal
 import socket
 import time
 

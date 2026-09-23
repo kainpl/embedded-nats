@@ -221,7 +221,7 @@ os._exit(0)
             break
         time.sleep(0.05)
     else:
-        pytest.fail("orphan child kept listening after exact-PID test cleanup")
+        pytest.fail("orphan lifetime lease stayed unavailable after exact-PID test cleanup")
     with NatsServer(store):
         pass
 

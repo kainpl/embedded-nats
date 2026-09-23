@@ -228,7 +228,7 @@ class NatsServer:
         if startup_timeout <= 0 or shutdown_timeout <= 0:
             raise ValueError("Time limits must be positive")
         if not isinstance(recover_stale, bool):
-            raise ValueError("recover_stale must be a boolean")
+            raise TypeError("recover_stale must be a boolean")
         token = secrets.token_urlsafe(32) if auth_token is None else auth_token
         if not _TOKEN.fullmatch(token):
             raise ValueError("auth_token must be 16-256 URL-safe ASCII characters")
