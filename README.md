@@ -12,7 +12,8 @@ needed to install a wheel. The only Python runtime dependency is pinned
 
 This is independent, unofficial packaging of the NATS™ server; it is not
 produced, sponsored, or endorsed by the NATS project or the Linux Foundation.
-The package name is under trademark review before any public package release.
+The maintainer has chosen to retain the `embedded-nats` name. This choice is
+not a claim of affiliation or trademark permission.
 
 ## Example
 
