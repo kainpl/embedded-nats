@@ -119,10 +119,25 @@ class _StoreLock:
 
 def _private_directory(path: Path) -> Path:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    resolved = path.resolve(strict=True)
-    if os.name != "nt" and resolved.stat().st_mode & 0o077:
-        raise EmbeddedNatsError(f"Store directory must be private (mode 0700): {resolved}")
-    return resolved
+    if os.name != "nt":
+        try:
+            # Pin the directory while checking its owner and repairing its mode.
+            # Never chmod through a replaced final-component symlink or recurse
+            # into JetStream data. The public store alias is resolved by __init__.
+            fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                info = os.fstat(fd)
+                if info.st_uid != os.geteuid():
+                    raise EmbeddedNatsError(f"Store directory must be owned by the current OS user: {path}")
+                if stat.S_IMODE(info.st_mode) != 0o700:
+                    os.fchmod(fd, 0o700)
+                if stat.S_IMODE(os.fstat(fd).st_mode) != 0o700:
+                    raise EmbeddedNatsError(f"Store directory did not retain private mode 0700: {path}")
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            raise EmbeddedNatsError(f"Unable to set private mode 0700 on store directory {path}: {exc}") from exc
+    return path.resolve(strict=True)
 
 
 def _redact(value: str, token: str) -> str:

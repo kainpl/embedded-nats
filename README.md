@@ -6,7 +6,7 @@ that one server. The project targets Python 3.12+ on Windows x64, Linux
 x86_64/aarch64/armv7l, and macOS x86_64/arm64 (macOS 12+).
 
 The package version tracks the server version plus a packaging revision:
-`2.15.0.1` bundles NATS `2.15.0`, packaging revision 1. No Go toolchain is
+`2.15.0.2` bundles NATS `2.15.0`, packaging revision 2. No Go toolchain is
 needed to install a wheel. The only Python runtime dependency is pinned
 `nats-py` 2.16.0.
 
@@ -94,7 +94,11 @@ increases the loss window after a crash. Windows managed stop terminates the
 child, so recovery is tested as a crash, not as graceful server shutdown.
 
 Store directories should be private to the OS user. On POSIX the manager
-requires mode 0700; on Windows choose a directory with a user-private ACL,
+sets its store, runtime and log directories to mode 0700 when they are owned
+by the current OS user, then verifies the result. Existing directories with
+broader permissions are repaired automatically; other owners and unsuccessful
+permission changes are refused. This does not recursively change stored data
+or modify parent directories. On Windows choose a directory with a user-private ACL,
 for example inside the user's application data directory. The generated
 configuration contains the token. The JetStream file budget defaults to 1 GB,
 memory store to 64 MB, and NATS message payload to 1 MiB. These do not cap

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.15.0.2 — 2026-10-07
+
+- Repair POSIX permissions on existing store, runtime and log directories owned
+  by the current OS user before starting NATS. A store created with mode 0755
+  no longer prevents dependent services from starting.
+- Verify mode 0700 after repair, refuse foreign-owned directories and final
+  symlinks during repair, and preserve stored data and its permissions.
+
 ## 2.15.0.0 — 2026-09-23
 
 Initial package: six platform wheels for nats-server 2.15.0, a managed
