@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.15.0.3 — Unreleased
+## 2.15.0.3 — 2026-10-25
 
 - Rebuild the pinned NATS server with Go 1.26.10 to include standard-library
   security fixes through that release. Keep NATS, its module dependencies,
