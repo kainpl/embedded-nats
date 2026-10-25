@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM_TAG = "v2.15.0"
 UPSTREAM_COMMIT = "eb763679aa3c24a40dcd3012aa046ad1996d851c"
-GO_VERSION = "go1.26.8"
+GO_VERSION = "go1.26.10"
 TARGETS = {
     "linux_amd64": ("linux", "amd64", "", "manylinux_2_17_x86_64"),
     "linux_arm64": ("linux", "arm64", "", "manylinux_2_17_aarch64"),

@@ -6,7 +6,7 @@ that one server. The project targets Python 3.12+ on Windows x64, Linux
 x86_64/aarch64/armv7l, and macOS x86_64/arm64 (macOS 12+).
 
 The package version tracks the server version plus a packaging revision:
-`2.15.0.2` bundles NATS `2.15.0`, packaging revision 2. No Go toolchain is
+`2.15.0.3` bundles NATS `2.15.0`, packaging revision 3. No Go toolchain is
 needed to install a wheel. The only Python runtime dependency is pinned
 `nats-py` 2.16.0.
 
@@ -123,7 +123,7 @@ consumer. The package neither installs an OS service nor deletes store data.
 ## Build and verification
 
 `scripts/build_wheels.py` builds six target binaries from the pinned upstream
-tag and commit with Go 1.26.8 (source minimum 1.26), then packages each in a
+tag and commit with Go 1.26.10 (source minimum 1.26), then packages each in a
 fresh staging tree. The exact commit, Go version, target, binary SHA256, and
 Go module inventory are inside every wheel. Linux wheels are tagged
 `manylinux_2_17` because the Go binary is built with CGO disabled; minimum

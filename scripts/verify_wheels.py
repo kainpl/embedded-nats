@@ -10,7 +10,7 @@ import tomllib
 import zipfile
 from pathlib import Path
 
-from build_wheels import TARGETS, UPSTREAM_COMMIT, UPSTREAM_TAG
+from build_wheels import GO_VERSION, TARGETS, UPSTREAM_COMMIT, UPSTREAM_TAG
 
 with (Path(__file__).resolve().parents[1] / "pyproject.toml").open("rb") as metadata:
     EXPECTED_VERSION = tomllib.load(metadata)["project"]["version"]
@@ -60,6 +60,7 @@ def main() -> None:
             manifest = json.loads(archive.read("embedded_nats/build_manifest.json"))
             if (
                 manifest["commit"] != UPSTREAM_COMMIT
+                or manifest["go"].split()[2] != GO_VERSION
                 or manifest["tag"] != UPSTREAM_TAG
                 or manifest["target"] != target
                 or manifest["platform_tag"] != platform

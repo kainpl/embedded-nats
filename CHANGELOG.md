@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.15.0.3 — Unreleased
+
+- Rebuild the pinned NATS server with Go 1.26.10 to include standard-library
+  security fixes through that release. Keep NATS, its module dependencies,
+  the managed-server API and the macOS 12 platform minimum unchanged.
+
 ## 2.15.0.2 — 2026-10-07
 
 - Repair POSIX permissions on existing store, runtime and log directories owned
